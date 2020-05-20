@@ -1,0 +1,379 @@
+---
+title: "Assignment 3 - Kickstarter Projects"
+author: "Taketo Muroya"
+output: 
+  html_document:
+    code_folding: hide
+    highlight: textmate
+    toc: yes
+always_allow_html: yes
+---
+
+```{r Setup, include=FALSE, results='hide', warning=FALSE}
+library(knitr)
+opts_chunk$set(fig.path="figures/", cache.path="cache/", 
+               cache=FALSE,echo=TRUE,message=FALSE,warning=FALSE)
+```
+
+```{r}
+# Setting up
+library(RColorBrewer)
+library(ggplot2)
+library(ggthemes)
+library(tidyverse)
+library(tidytext)
+library(dplyr)
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(plotrix)
+```
+
+## 1. Identifying Successful Projects
+### a) Success by Category
+
+```{r, fig.height=5, fig.width=10}
+# load dataset
+data_raw <- read.csv("kickstarter_projects_2020_02.csv", 
+                     stringsAsFactors=FALSE)
+
+# clean data
+data_raw$pledged <- as.numeric(data_raw$pledged)
+data0 <- subset(data_raw, data_raw$pledged != 'NA')
+data0$backers_count <- as.numeric(data0$backers_count)
+data1 <- subset(data0, data0$backers_count != 'NA')
+data2 <- subset(data1, data1$staff_pick == 'TRUE')
+data3 <- subset(data1, data1$staff_pick == 'FALSE')
+data4 <- rbind(data2, data3)
+data5 <- subset(data4, data4$spotlight == 'TRUE')
+data6 <- subset(data4, data4$spotlight == 'FALSE')
+data <- rbind(data5, data6)
+
+# create achievement_ratio
+data$achievement_ratio <- 
+  round(100*as.numeric(data$pledged)/as.numeric(data$goal),1)
+
+# visualize
+ggplot(data, aes(reorder(top_category, pledged, mean), pledged)) +
+  stat_summary(fun=mean, geom="bar", fill="blue", width=0.7) + 
+  xlab("Category") + ylab("Average pledged amount") + 
+  ggtitle("Success by category (pledged amount)") + theme_economist()
+
+ggplot(data, aes(reorder(top_category, achievement_ratio, mean), 
+                 achievement_ratio)) + theme_economist() + 
+  stat_summary(fun=mean, geom="bar", fill="blue", width=0.7) + 
+  xlab("Category") + ylab("Average achievement ratio (%)") + 
+  ggtitle("Success by category (achievement ratio)")
+```
+
+#### **Comment:** Based on the measurement of pledged amount, technology, design, and games are very successful projects. However, the absolute values of pledged amount may not represent the degree of success properly because these top 3 projects seem like relatively large-scale projects. Thus, the achievement ratio shows the different result, saying that comics, publishing, and music are very successful projects.
+
+## 2. Writing your success story
+
+### a) Cleaning the Text and Word Cloud
+
+```{r, fig.height=5, fig.width=10}
+# pick up success and non-success data
+top <- subset(data, data$achievement_ratio >= 1184)
+top$doc_id <- paste(top$id, "top", sep = "_")
+worst_temp <- subset(data, data$pledged == 0)
+set.seed(1234)
+worst <- sample_n(tbl=worst_temp, size=1000)
+worst$doc_id <- paste(worst$id, "worst", sep = "_")
+df <- rbind(top, worst)
+
+# Remove fully capitalized words
+for (i in 1:nrow(df)){
+  df$blurb[i] <- gsub("(?:[A-Z]+){2,}","", df$blurb[i])
+}
+
+# create corpus
+df_temp <- df[,c(26,2)]
+colnames(df_temp) <- c("doc_id", "text")
+df_source <- DataframeSource(df_temp)
+df_corpus <- VCorpus(df_source)
+
+# cleaning text
+clean_corpus <- function(corpus){
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, removeWords, c(stopwords("en"))) 
+  corpus <- tm_map(corpus, removeNumbers)
+  corpus <- tm_map(corpus, stripWhitespace)
+  return(corpus)
+}
+df_clean <- clean_corpus(df_corpus)
+
+# Stemming text
+df_stemmed <- tm_map(df_clean, stemDocument)
+
+# Completing text
+stemCompletion2 <- function(x, dictionary) {
+   x <- unlist(strsplit(as.character(x), " "))
+   x <- x[x != ""]
+   x <- stemCompletion(x, dictionary=dictionary)
+   x <- paste(x, sep="", collapse=" ")
+   #PlainTextDocument(stripWhitespace(x))
+   x <- stripWhitespace(x)
+   x
+}
+
+for (i in 1:nrow(df)){
+  df_temp$text[i]<-stemCompletion2(df_stemmed[[i]]$content, df_clean)
+}
+df_source <- DataframeSource(df_temp)
+df_comp <- VCorpus(df_source)
+
+# create the dtm and tdm from the corpus
+df_dtm <- DocumentTermMatrix(df_comp)
+df_tdm <- TermDocumentMatrix(df_comp)
+m_dtm <- as.matrix(df_dtm)
+m_tdm <- as.matrix(df_tdm)
+
+# tidy object
+df_td <- tidy(df_tdm)
+meta <- as_data_frame(str_split_fixed(df_td$document, "_", n=2))
+colnames(meta) <- c("id", "status")
+df_td <- as_data_frame(cbind(df_td, meta))
+
+# calculate tf_idf
+df_tfidf <- df_td %>%
+  bind_tf_idf(term, document, count) %>%
+  arrange(desc(tf_idf))
+
+# subset top data
+top_tfidf <- subset(df_tfidf, df_tfidf$status=="top")
+  
+# create a wordcloud for the values in word_freqs
+set.seed(1234)
+wordcloud(top_tfidf$term, top_tfidf$tf, 
+          max.words=100, colors=brewer.pal(8, "Dark2"))
+```
+
+### b) Success in words
+
+```{r, fig.align="center"}
+# combine top and worst data
+sum_top <- 0
+sum_worst <- 0
+for (i in 1:nrow(m_tdm)){
+  sum_top[i] <- sum(m_tdm[i,1:nrow(top)])
+  sum_worst[i] <- sum(m_tdm[i,(nrow(top)+1):(nrow(top)+nrow(worst))])
+}
+sum <- cbind(sum_top, sum_worst)
+sum <- data.frame(sum,row.names=rownames(m_tdm))
+
+# create common_words
+common_words <- subset(sum, sum[,1] > 0 & sum[,2] > 0)
+difference <- abs(common_words[,1] - common_words[,2])
+common_words <- cbind(common_words, difference)
+common_words <- common_words[order(common_words[,3], decreasing = TRUE), ]
+
+# create top20
+top20 <- data.frame(x = common_words[1:20,1], 
+                    y = common_words[1:20,2], 
+                    labels = rownames(common_words[1:20,]))
+
+# create the pyramid plot
+p <- pyramid.plot(top20$x, top20$y, labels = top20$labels, gap = 10, 
+                  top.labels=c("Success", "Words in common", "Non-success"),
+                  main="Common words between success & non-success projects",
+                  laxlab = NULL, raxlab = NULL, unit = NULL, labelcex=0.5)
+```
+
+### c) Simplicity as a virtue
+
+```{r, fig.align="center"}
+# random sampling from master data
+set.seed(1234)
+sample <- sample_n(tbl=data, size=2000)
+sample <- sample[-1394,]
+d_temp <- sample[,c(10,2)]
+colnames(d_temp) <- c("doc_id", "text")
+d_source <- DataframeSource(d_temp)
+d_corpus <- VCorpus(d_source)
+
+# calculate readability
+require(quanteda)
+require(dplyr)
+df_cor <- corpus(d_corpus)
+df_FRE <- textstat_readability(df_cor, measure=c('Flesch.Kincaid'))
+FRE <- cbind(df_FRE, sample$backers_count)
+FRE <- FRE[-1082,]
+colnames(FRE) <- c("doc", "FRE", "success")
+
+# visualize
+ggplot(FRE) + geom_point(aes(FRE, success)) + theme_economist() + 
+  stat_smooth(aes(FRE, success), formula=y~x, method="loess") + 
+  xlab("Readability (easy - difficult)") + ylab("Number of backers") + 
+  ggtitle("Success across readability") + coord_cartesian(ylim=c(0, 300))
+```
+
+#### **Comment:** From the relationship between the number of backers and the readability of project sentences, too simple or too complicated sentences could result in less success projects.
+
+## 3. Sentiment
+
+### a) Stay positive
+
+```{r, fig.align="center"}
+# random sampling
+set.seed(1234)
+sample <- sample_n(tbl=data, size=2000)
+
+# get sentiment score
+pos <- read.table("dictionaries/positive-words.txt", as.is=T)
+neg <- read.table("dictionaries/negative-words.txt", as.is=T)
+
+sentiment <- function(words){
+  require(quanteda)
+  tok <- quanteda::tokens(words)
+  pos.count <- sum(tok[[1]]%in%pos[,1])
+  neg.count <- sum(tok[[1]]%in%neg[,1])
+  out <- (pos.count-neg.count)/(pos.count+neg.count)
+  out
+}
+
+sen <- 0
+for (i in 1:nrow(sample)){
+  sen[i] <- sentiment(sample$blurb[i])
+}
+
+# combine sentiment and success measurement
+df_sen <- data.frame(cbind(sen, sample$backers_count))
+colnames(df_sen) <- c("sentiment", "success")
+
+# visualize
+ggplot(df_sen) + geom_point(aes(sentiment, success)) +  
+  stat_smooth(aes(sentiment, success), formula=y~x, method="loess") + 
+  xlab("Sentiment (negative - positive)") + ylab("Number of backers") + 
+  ggtitle("Success across sentiment") + coord_cartesian(ylim=c(0, 300)) + 
+  theme_economist()
+```
+
+#### **Comment:** The relationship between sentiment and the number of backers is not linear. The very negative sentences could get many backers, but they lose backers as they become neutral. And then, the projects get more backers as they have more positive sentiments. However, after around 0.5 score of sentiment, the number of backers goes down again.
+
+### b) Positive vs negative 
+
+```{r, fig.align="center"}
+# combine sentiment and text
+data_sen <- data.frame(cbind(sample$blurb, df_sen))
+colnames(data_sen) <- c("text", "sentiment", "success")
+
+# find positive and negative text
+positive <- subset(data_sen, sentiment > 0)
+negative <- subset(data_sen, sentiment < 0)
+
+p_text <- list()
+for (i in 1:nrow(positive)){
+  p_text <- paste(p_text, positive$text[i], sep = " ")
+}
+n_text <- list()
+for (i in 1:nrow(negative)){
+  n_text <- paste(n_text, negative$text[i], sep = " ")
+}
+
+# create corpus
+pn_temp <- data.frame(c("positive","negative"), c(p_text, n_text))
+colnames(pn_temp) <- c("doc_id", "text")
+pn_source <- DataframeSource(pn_temp)
+pn_corpus <- VCorpus(pn_source)
+pn_clean <- clean_corpus(pn_corpus)
+
+# create the dtm and tdm from the corpus
+pn_dtm <- DocumentTermMatrix(pn_clean)
+pn_tdm <- TermDocumentMatrix(pn_clean)
+m_pn_dtm <- as.matrix(pn_dtm)
+m_pn_tdm <- as.matrix(pn_tdm)
+
+# Create comparison cloud
+comparison.cloud(m_pn_tdm, colors = c("orange", "blue"), 
+                 scale=c(0.1,2), title.size= 1, max.words = 100)
+```
+
+### c) Get in their mind
+
+```{r, fig.align="center"}
+#library(remotes)
+#install_github("EmilHvitfeldt/textdata")
+#install_github("juliasilge/tidytext")
+
+# prepare emotion dictionary
+dic <- get_sentiments("nrc")
+anger <- subset(dic$word, dic$sentiment=="anger")
+anticipation <- subset(dic$word, dic$sentiment=="anticipation")
+disgust <- subset(dic$word, dic$sentiment=="disgust")
+fear <- subset(dic$word, dic$sentiment=="fear")
+joy <- subset(dic$word, dic$sentiment=="joy")
+sadness <- subset(dic$word, dic$sentiment=="sadness")
+surprise <- subset(dic$word, dic$sentiment=="surprise")
+trust <- subset(dic$word, dic$sentiment=="trust")
+
+# measure emotion score
+emotion <- function(words){
+  require(quanteda)
+  tok <- quanteda::tokens(words)
+  anticipation.c <- sum(tok[[1]]%in%anticipation)
+  joy.c <- sum(tok[[1]]%in%joy)
+  trust.c <- sum(tok[[1]]%in%trust)
+  surprise.c <- sum(tok[[1]]%in%surprise)
+  anger.c <- sum(tok[[1]]%in%anger)
+  disgust.c <- sum(tok[[1]]%in%disgust)
+  fear.c <- sum(tok[[1]]%in%fear)
+  sadness.c <- sum(tok[[1]]%in%sadness)
+  out <- data.frame(anticipation.c, joy.c, trust.c, surprise.c, 
+                    anger.c, disgust.c, fear.c, sadness.c)
+  out
+}
+
+emo <- emotion(sample$blurb[1])
+for (i in 2:nrow(sample)){
+  emo <- rbind(emo, emotion(sample$blurb[i]))
+}
+
+# combine emotion and success measurement
+df_emo <- data.frame(cbind(emo, sample$backers_count))
+colnames(df_emo) <- c("anticipation", "joy", "trust", "surprise",
+                      "anger", "disgust", "fear", "sadness", "success")
+
+# visualize
+ggplot(df_emo)+geom_boxplot(aes(anticipation,success,group=anticipation)) +
+  xlab("Anticipation") + ylab("Number of backers") + 
+  ggtitle("Success across anticipation emotion") + 
+  coord_cartesian(ylim=c(0, 300)) + theme_economist()
+
+ggplot(df_emo) + geom_boxplot(aes(joy, success, group=joy)) +  
+  xlab("Joy") + ylab("Number of backers") + 
+  ggtitle("Success across joy emotion") + 
+  coord_cartesian(ylim=c(0, 300)) + theme_economist()
+
+ggplot(df_emo) + geom_boxplot(aes(trust, success, group=trust)) +  
+  xlab("Trust") + ylab("Number of backers") + 
+  ggtitle("Success across trust emotion") + 
+  coord_cartesian(ylim=c(0, 300)) + theme_economist()
+
+ggplot(df_emo) + geom_boxplot(aes(surprise, success, group=surprise)) +  
+  xlab("surprise") + ylab("Number of backers") + 
+  ggtitle("Success across surprise emotion") + 
+  coord_cartesian(ylim=c(0, 300)) + theme_economist()
+
+ggplot(df_emo) + geom_boxplot(aes(anger, success, group=anger)) +  
+  xlab("Anger") + ylab("Number of backers") + 
+  ggtitle("Success across anger emotion") + 
+  coord_cartesian(ylim=c(0, 300)) + theme_economist()
+
+ggplot(df_emo) + geom_boxplot(aes(disgust, success, group=disgust)) +  
+  xlab("Disgust") + ylab("Number of backers") + 
+  ggtitle("Success across disgust emotion") + 
+  coord_cartesian(ylim=c(0, 300)) + theme_economist()
+
+ggplot(df_emo) + geom_boxplot(aes(fear, success, group=fear)) +  
+  xlab("Fear") + ylab("Number of backers") + 
+  ggtitle("Success across fear emotion") + 
+  coord_cartesian(ylim=c(0, 300)) + theme_economist()
+
+ggplot(df_emo) + geom_boxplot(aes(sadness, success, group=sadness)) +  
+  xlab("Sadness") + ylab("Number of backers") + 
+  ggtitle("Success across sadness emotion") + 
+  coord_cartesian(ylim=c(0, 300)) + theme_economist()
+```
+
+#### **Comment:** The large sadness emotion could help the projects get more backers. On the other hand, the anger and disgust emotion could reduce the chance to get backers. The other emotions are not clear about it.

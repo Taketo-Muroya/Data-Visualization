@@ -1,0 +1,306 @@
+---
+title: "Assignment 2 - Mapping"
+author: "Taketo Muroya"
+output: 
+  html_document:
+    code_folding: hide
+    highlight: textmate
+    toc: yes
+always_allow_html: yes
+---
+
+```{r Setup, include=FALSE, results='hide', warning=FALSE}
+library(knitr)
+opts_chunk$set(fig.path="figures/", cache.path="cache/", 
+               cache=FALSE,echo=TRUE,message=FALSE,warning=FALSE)
+
+```
+
+```{r}
+# Setting up
+library(leaflet)
+library(RColorBrewer)
+library(sp)
+library(rgeos)
+library(geosphere)
+library(ggplot2)
+library(ggthemes)
+library(tidyverse)
+library(rgdal)
+library(ggmap)
+library(lubridate)
+```
+
+## 1. Location of Severe Fires
+
+```{r}
+# load data
+rawfire <- read.csv("building_fires.csv")
+
+# pick up highest severity (=5th alarm)
+fire1 <- subset(rawfire,HIGHEST_LEVEL_DESC=="55 - Fifth Alarm")
+fire2 <- subset(rawfire,HIGHEST_LEVEL_DESC=="5 - 5th alarm")
+fire <- rbind(fire1, fire2)
+# Initially 75 seems to be highest but followed http://www.fdnewyork.com/aa.asp
+# fire <- subset(rawfire,HIGHEST_LEVEL_DESC=="75 - All Hands Working")
+
+# create popup
+content <- paste("When:",fire$INCIDENT_DATE_TIME,"<br/>",
+                 "Where:",fire$address,"<br/>",
+                 "Action:",fire$ACTION_TAKEN1_DESC,"<br/>")
+
+# create base map
+m <- leaflet(fire) %>%
+  addTiles() %>% setView(-73.9326, 40.8075, zoom = 12) %>%
+  addProviderTiles("Stamen.TonerLite")
+
+# plot fire incidents
+m %>% addCircleMarkers(lng = ~lon, lat = ~lat, popup = content)
+```
+
+## 2. Layers and Clusters
+### a) Color by Type of Property
+
+```{r}
+# labeling property
+fire$property <- substr(fire$PROPERTY_USE_DESC, 1, 1)
+fire$property <- gsub("0", "Other", fire$property)
+fire$property <- gsub("1", "Assembly", fire$property)
+fire$property <- gsub("2", "Education", fire$property)
+fire$property <- gsub("3", "Health", fire$property)
+fire$property <- gsub("4", "Residence", fire$property)
+fire$property <- gsub("5", "Business", fire$property)
+fire$property <- gsub("6", "Manufacturing", fire$property)
+fire$property <- gsub("7", "Manufacturing", fire$property)
+fire$property <- gsub("8", "Other", fire$property)
+fire$property <- gsub("9", "Outside", fire$property)
+fire$property <- gsub("N", "Other", fire$property)
+fire$property <- gsub("U", "Other", fire$property)
+
+# create color and popup
+pal = colorFactor("Set1", domain=fire$property)
+color_offsel1 = pal(fire$property)
+
+content <- paste("When:",fire$INCIDENT_DATE_TIME,"<br/>",
+                 "Where:",fire$address,"<br/>",
+                 "Action:",fire$ACTION_TAKEN1_DESC,"<br/>",
+                 "Property:",fire$property,"<br/>")
+
+# plot fire incidents by property
+m %>% 
+  addCircleMarkers(lng = ~lon, lat = ~lat, color = color_offsel1,
+                   popup = content) %>% 
+  addLegend(position = 'topleft', values = ~fire$property, 
+            pal = pal, title = "Affected Property")
+```
+
+### b) Cluster
+
+```{r}
+m %>% 
+  addCircleMarkers(clusterOptions=markerClusterOptions(),
+                   color=color_offsel1, popup=content, 
+                   lng = ~lon, lat = ~lat) %>%
+  addLegend(position = 'topleft', values = ~fire$property, 
+            pal = pal, title = "Affected Property")
+```
+
+## 3. Fire Houses
+
+```{r}
+house <- read.csv("FDNY_Firehouse_Listing.csv")
+
+m %>% 
+  addCircleMarkers(radius=fire$UNITS_ONSCENE/3, group="Incidents",
+                   color=color_offsel1, popup=content, 
+                   lng = ~lon, lat = ~lat) %>% 
+  addLegend(position = 'topleft', values = ~fire$property, 
+            pal = pal, title = "Affected Property") %>%
+  addMarkers(data=house, group = "Firehouses",
+             popup = ~as.character(house$FacilityName), 
+             lng = ~Longitude, lat = ~Latitude) %>%
+  addLayersControl(overlayGroups=c("Incidents","Firehouses"))
+```
+
+## 4. Distance from Firehouse and Response Time
+### a) Calculate Distance
+
+```{r}
+house <- subset(house, house$Latitude != "NA")
+
+# calculate distance from fire house
+a <- SpatialPoints(rawfire[,c(27,26)])
+b <- SpatialPoints(house[,c(5,6)])
+rawfire$nearest <- 1000*apply(gDistance(a, b, byid=TRUE), 2, min)
+
+# calculate response time
+rawfire$happen <- parse_date_time(rawfire$INCIDENT_DATE_TIME,
+                                  c('%m/%d/%Y %I:%M:%S %p'))
+rawfire$arrival <- parse_date_time(rawfire$ARRIVAL_DATE_TIME,
+                                   c('%m/%d/%Y %I:%M:%S %p'))
+rawfire$response <- as.numeric(rawfire$arrival - rawfire$happen)
+
+# cleaning data and omitting outliers
+cleanfire <- subset(rawfire, rawfire$response != "NA")
+cleanfire <- subset(cleanfire, cleanfire$response != "-305")
+cleanfire <- subset(cleanfire, cleanfire$nearest < 1000)
+cleanfire <- subset(cleanfire, cleanfire$response < 2000)
+
+# create the high severity group
+sev1 <- subset(cleanfire,HIGHEST_LEVEL_DESC=="55 - Fifth Alarm")
+sev2 <- subset(cleanfire,HIGHEST_LEVEL_DESC=="5 - 5th alarm")
+sev <- rbind(sev1, sev2)
+
+# create the low severity group
+nsev <- subset(cleanfire,HIGHEST_LEVEL_DESC=="0 - Initial alarm")
+
+# regression analysis
+all <- lm(response ~ nearest, data = cleanfire)
+high <- lm(response ~ nearest, data = sev)
+low <- lm(response ~ nearest, data = nsev)
+
+# visualize the relationships
+ggplot(cleanfire, aes(x=nearest,y=response)) + 
+  geom_point() + stat_smooth(method="lm") + theme_economist() + 
+  xlab("Distance from Firehouse") + ylab("Response time") + 
+  ggtitle("Distance from Firehouse and Response Time (All)") + 
+  geom_text(aes(30,850,label=paste("Slope =",round(all$coef[2],1))))
+
+ggplot(sev, aes(x=nearest,y=response)) + 
+  geom_point() + stat_smooth(method="lm") + theme_economist() + 
+  xlab("Distance from Firehouse") + ylab("Response time") + 
+  ggtitle("Distance from Firehouse and Response Time \n (High Severity: 5th alarm)") + 
+  geom_text(aes(15,380,label=paste("Slope =",round(high$coef[2],1))))
+
+ggplot(nsev, aes(x=nearest,y=response)) + 
+  geom_point() + stat_smooth(method="lm") + theme_economist() + 
+  xlab("Distance from Firehouse") + ylab("Response time") + 
+  ggtitle("Distance from Firehouse and Response Time \n (Low Severity: Initial alarm)") + 
+  geom_text(aes(15,380,label=paste("Slope =",round(low$coef[2],1))))
+```
+
+#### **Comment:** We can see positive slopes among these graphs. The slopes of low severity and high severity would be steeper than the total one. This may be because the distance from firehouse would be more likely to affect the response time in the low and high severe situation.
+
+### b) Map of Response Times
+
+```{r, results='hide'}
+# load shape file of borough map
+nyc_b <- readOGR("borough/.","nybb")
+nyc_b <- spTransform(nyc_b, CRS("+proj=longlat +datum=WGS84"))
+nyc_b <- fortify(nyc_b)
+
+# load nyc map in google map
+nycmap <- get_map("New York City", source="stamen",
+                  maptype="toner-lite")
+g <- ggmap(nycmap)
+```
+
+```{r}
+# labeling property
+cleanfire$property <- substr(cleanfire$PROPERTY_USE_DESC, 1, 1)
+cleanfire$property <- gsub("0", "Other", cleanfire$property)
+cleanfire$property <- gsub("1", "Assembly", cleanfire$property)
+cleanfire$property <- gsub("2", "Education", cleanfire$property)
+cleanfire$property <- gsub("3", "Health", cleanfire$property)
+cleanfire$property <- gsub("4", "Residence", cleanfire$property)
+cleanfire$property <- gsub("5", "Business", cleanfire$property)
+cleanfire$property <- gsub("6", "Manufacturing", cleanfire$property)
+cleanfire$property <- gsub("7", "Manufacturing", cleanfire$property)
+cleanfire$property <- gsub("8", "Other", cleanfire$property)
+cleanfire$property <- gsub("9", "Outside", cleanfire$property)
+cleanfire$property <- gsub("N", "Other", cleanfire$property)
+cleanfire$property <- gsub("U", "Other", cleanfire$property)
+
+# aggregate by borough & property
+pf <- aggregate(cleanfire$response, 
+                by=list(cleanfire$BOROUGH_DESC, cleanfire$property),
+                FUN=mean)
+colnames(pf) = c("borough", "property", "response")
+
+# combine borough map and aggregated data
+pf$borough <- gsub("2 - Bronx", "Bronx", pf$borough)
+pf$borough <- gsub("3 - Staten Island", "Staten Island", pf$borough)
+pf$borough <- gsub("4 - Brooklyn", "Brooklyn", pf$borough)
+pf$borough <- gsub("5 - Queens", "Queens", pf$borough)
+pf$borough <- gsub("1 - Manhattan", "Manhattan", pf$borough)
+
+nyc_b$id <- gsub("0", "Bronx", nyc_b$id)
+nyc_b$id <- gsub("1", "Staten Island", nyc_b$id)
+nyc_b$id <- gsub("2", "Brooklyn", nyc_b$id)
+nyc_b$id <- gsub("3", "Queens", nyc_b$id)
+nyc_b$id <- gsub("4", "Manhattan", nyc_b$id)
+
+nyc_p <- left_join(pf, nyc_b, by = c("borough" = "id"))
+
+# visualization by property
+g +
+  geom_polygon(aes(x=long, y=lat, group=group, fill=response), 
+               color='black', size=0.0125, data=nyc_p) + 
+  scale_fill_gradientn(colours=c("blue","purple2","red")) + 
+  facet_wrap(~ property, ncol = 4)
+```
+
+#### **Comment:** The response time tends to be longer for the health property than for other properties, especially in Queens, Bronx, and Manhattan.
+
+```{r}
+# labeling severity
+cleanfire$s <- substr(cleanfire$HIGHEST_LEVEL_DESC, 1, 1)
+cleanfire$s <- gsub("0", "(0) Initial alarm", cleanfire$s)
+cleanfire$s <- gsub("1", "(1) First alarm", cleanfire$s)
+cleanfire$s <- gsub("2", "(2) Second alarm", cleanfire$s)
+cleanfire$s <- gsub("3", "(3) Third alarm", cleanfire$s)
+cleanfire$s <- gsub("4", "(4) Fourth alarm", cleanfire$s)
+cleanfire$s <- gsub("5", "(5) Fifth alarm", cleanfire$s)
+cleanfire$s <- gsub("7", "All Hands Working", cleanfire$s)
+
+# aggregate by borough & severity
+sf <- aggregate(cleanfire$response, 
+                by=list(cleanfire$BOROUGH_DESC, cleanfire$s),
+                FUN=mean)
+colnames(sf) = c("borough", "severity", "response")
+
+# combine borough map and aggregated data
+sf$borough <- gsub("2 - Bronx", "Bronx", sf$borough)
+sf$borough <- gsub("3 - Staten Island", "Staten Island", sf$borough)
+sf$borough <- gsub("4 - Brooklyn", "Brooklyn", sf$borough)
+sf$borough <- gsub("5 - Queens", "Queens", sf$borough)
+sf$borough <- gsub("1 - Manhattan", "Manhattan", sf$borough)
+
+nyc_s <- left_join(sf, nyc_b, by = c("borough" = "id"))
+
+# visualization by severity
+g +
+  geom_polygon(aes(x=long, y=lat, group=group, fill=response), 
+               color='black', size=0.0125, data=nyc_s) + 
+  scale_fill_gradientn(colours=c("blue","purple2","red")) + 
+  facet_wrap(~ severity, ncol = 4)
+```
+
+#### **Comment:** When we campare the response time between (0) Initial alarm and (5) Fifth alarm, the response time tends to be longer for initial, fourth, and fifth alarm in some areas.
+
+```{r}
+# aggregate by borough & year
+cleanfire$year <- substr(cleanfire$happen, 1, 4)
+af <- aggregate(cleanfire$response, 
+                by=list(cleanfire$BOROUGH_DESC, cleanfire$year),
+                FUN=mean)
+colnames(af) = c("borough", "year", "response")
+
+# combine borough map and aggregated data
+af$borough <- gsub("2 - Bronx", "Bronx", af$borough)
+af$borough <- gsub("3 - Staten Island", "Staten Island", af$borough)
+af$borough <- gsub("4 - Brooklyn", "Brooklyn", af$borough)
+af$borough <- gsub("5 - Queens", "Queens", af$borough)
+af$borough <- gsub("1 - Manhattan", "Manhattan", af$borough)
+
+nyc_y <- left_join(af, nyc_b, by = c("borough" = "id"))
+
+# visualization by year
+g +
+  geom_polygon(aes(x=long, y=lat, group=group, fill=response), 
+               color='black', size=0.0125, data=nyc_y) + 
+  scale_fill_gradientn(colours=c("blue","purple2","red")) + 
+  facet_wrap(~ year, ncol = 3)
+```
+
+#### **Comment:** The response time seems to be longer in all boroughs as the time goes, especially in 2018.

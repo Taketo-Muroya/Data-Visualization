@@ -1,0 +1,266 @@
+---
+title: "Assignment 1 - Student Loan Debt"
+author: "Taketo Muroya"
+output: 
+  html_document:
+    highlight: textmate
+    theme: spacelab
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+  html_notebook:
+    toc: yes
+always_allow_html: yes
+---
+
+```{r Setup, include=FALSE, results='hide', warning=FALSE}
+library(knitr)
+opts_chunk$set(fig.path="figures/", cache.path="cache/", cache=FALSE,
+               echo=TRUE, message=FALSE, warning=FALSE)
+```
+
+```{r}
+# Setting up
+library(ggplot2)
+library(plotly)
+library(ggthemes)
+library(tidyr)
+library(DT)
+raw <- read.csv("data/survey_SCF.txt")
+```
+
+## 1. Debt over time
+
+```{r}
+d1 <- aggregate(raw$INCOME, by=list(raw$YEAR), FUN=mean)
+
+d1 <- merge(d1, aggregate(raw$DEBT, by=list(raw$YEAR), 
+                          FUN=mean), by="Group.1")
+d1 <- merge(d1, aggregate(raw$VEH_INST, by=list(raw$YEAR), 
+                          FUN=mean), by="Group.1")
+d1 <- merge(d1, aggregate(raw$EDN_INST, by=list(raw$YEAR), 
+                          FUN=mean), by="Group.1")
+d1 <- merge(d1, aggregate(raw$NH_MORT, by=list(raw$YEAR), 
+                          FUN=mean), by="Group.1")
+d1 <- merge(d1, aggregate(raw$CCBAL, by=list(raw$YEAR), 
+                          FUN=mean), by="Group.1")
+
+colnames(d1) = c("year", "income", "debt", "car_loans", 
+                 "student_loans","mortgage", "credit_card")
+
+d1$r_debt <- 100 * d1$debt / d1$income
+d1$r_mortgage <- 100 * d1$mortgage / d1$income
+d1$r_car_loans <- 100 * d1$car_loans / d1$income
+d1$r_student_loans <- 100 * d1$student_loans / d1$income
+d1$r_credit_card <- 100 * d1$credit_card / d1$income
+
+ggplot(d1) + 
+  geom_line(aes(x=year, y=r_student_loans), size=1) + 
+  geom_bar(aes(x=year, y=student_loans/10000), 
+               fill="blue", stat="identity", 
+               position="identity", alpha=0.5) + 
+  scale_y_continuous(sec.axis=sec_axis(~.*10000, 
+                     "Average student loan ($)")) + 
+  annotate("text", x=1996, y=0.35, size=4, 
+           label="Ratio of student loan to income") + 
+  annotate("text", x=2010, y=0.15, size=4, col="blue",
+           label="Average student loan") + 
+  xlab("Year") + ylab("Ratio of student loan to income (%)") + 
+  ggtitle("Student loan over time") + theme_economist()
+```
+
+```{r}
+d11 <- d1[,-2:-9]
+d11 <- gather(d11, key=loan_type, value=amount, 
+              r_student_loans, r_car_loans, r_credit_card)
+
+ggplot(d11, aes(year, amount, fill=loan_type)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Year") + ylab("Ratio of loan to income (%)") + 
+  scale_fill_discrete(name="", 
+  labels=c("Car loan", "Credit card", "Student loan")) + 
+  ggtitle("Loan comparison over time (part 1)") + theme_economist()
+```
+
+```{r}
+d12 <- d1[,-2:-7]
+d12 <- gather(d12, key=loan_type, value=amount, 
+              r_student_loans, r_debt, r_mortgage)
+d12 <- d12[,-2:-3]
+
+ggplot(d12, aes(year, amount, fill=loan_type)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("Year") + ylab("Ratio of loan to income (%)") + 
+  scale_fill_discrete(name="", 
+  labels=c("Total debt", "Mortgage", "Student loan")) + 
+  ggtitle("Loan comparison over time (part 2)") + theme_economist()
+```
+
+#### **Comment:** If the editor wants to focus on the increase in student loan, I would recommend the first graph because it clearly shows how student loan increased over time in terms of both amount and the rate to income. If the editor more likely to discuss the size of student loan compared to other loans, I would recommend the second and third graphs because they show how student loan increased comparing to other loans, which indicates that student loan is actually not so large among household loans.
+
+## 2. Tell me who you are
+
+```{r}
+d2 <- subset(raw, YEAR==2016)
+
+age <- aggregate(d2$EDN_INST, by=list(d2$AGE), mean)
+colnames(age) = c("AGE", "EDN_INST")
+
+ggplot(age, aes(AGE, EDN_INST)) + 
+  geom_area(fill="green") + coord_cartesian(xlim=c(18, 80)) + 
+  xlab("Age") + ylab("Average student loan ($)") + 
+  ggtitle("Student loan across ages") + theme_economist()
+```
+
+```{r}
+race_sum <- aggregate(d2$EDN_INST, by=list(d2$RACE), sum)
+colnames(race_sum) = c("RACE", "EDN_INST")
+labels <- c("White","Black","Hispanic","Other")
+pct <- round(race_sum$EDN_INST/sum(race_sum$EDN_INST)*100)
+lbls <- paste(labels, pct)
+lbls <- paste(lbls,"%", sep="")
+myPalette <- RColorBrewer::brewer.pal(5, "Set2")
+
+pie(race_sum$EDN_INST, labels=lbls, border="white", 
+    col=myPalette, main="Student loan by race (total)")
+```
+
+```{r}
+race_mean <- aggregate(d2$EDN_INST, by=list(d2$RACE), mean)
+colnames(race_mean) = c("RACE", "EDN_INST")
+race_mean$RACE <- c("White","Black","Hispanic","Other")
+
+ggplot(race_mean) + 
+  geom_bar(aes(x=RACE, y=EDN_INST), fill="blue", 
+           stat="identity", position="identity", width=0.7) + 
+  xlab("Race") + ylab("Average student loan ($)") + 
+  ggtitle("Student loan by race (average)") + theme_economist()
+```
+
+#### **Comment:** If the editor wants to talk about how student loan changes as age increases, the first graph would serve as a good visualization that shows student loan increases by around 30 years old and then, it decreases as people get older. If the editor is interested in the relationship between student loan and race, the second and third graphs give an implication that, although White people use majority of student loan, Black people suffer the largest student loan in terms of average amount.
+
+## 3. Wealth and Income Distribution
+
+```{r}
+d3 <- subset(raw, YEAR==2016)
+d3 <- subset(d3, EDN_INST!=0)
+
+d3$INCCAT <- factor(d3$INCCAT, levels = c(1,2,3,4,5,6), 
+             labels=c("0-20%","20-40%","40-60%","60-80%","80-90%","90-100%"))
+
+ggplot(d3, aes(EDN_INST/1000)) + facet_wrap(~INCCAT) + 
+  geom_histogram(binwidth=5, color="green", fill="green") + 
+  xlab("Student loan (k$, excluding zero)") + ylab("Number of households") + 
+  ggtitle("Student loan dist. by income level") + theme_economist()
+```
+
+```{r}
+d3$NWCAT <- factor(d3$NWCAT, levels = c(1,2,3,4,5), 
+            labels=c("0-25%","25-50%","50-75%","75-90%","90-100%"))
+
+ggplot(d3, aes(EDN_INST/1000)) + facet_wrap(~NWCAT) + 
+  geom_histogram(binwidth=5, color="blue", fill="blue") +
+  xlab("Student loan (k$, excluding zero)") + ylab("Number of households") + 
+  ggtitle("Student loan dist. by wealth level") + theme_economist()
+```
+
+#### **Comment:** From the first graph, we can see the change of student loan distribution by income level. According to this graph, as income increases, people tend to use more student loan by 60% income level. However, for those whose income level is more than 60%, student loan decreases instead because they tend to have enough income to study without using loan. If the editor wants to see the relationship with wealth, I would recommend the second graph because it clearly shows that the number and amount of student loan decreases as wealth increases.
+
+## 4. Going broke
+
+```{r}
+d4 <- subset(raw, YEAR==2016)
+
+bank <- aggregate(d4$EDN_INST, by=list(d4$BNKRUPLAST5), mean)
+bank <- merge(bank, aggregate(d4$VEH_INST, 
+              by=list(d4$BNKRUPLAST5), mean), by="Group.1")
+bank <- merge(bank, aggregate(d4$NH_MORT, 
+              by=list(d4$BNKRUPLAST5), mean), by="Group.1")
+bank <- merge(bank, aggregate(d4$CCBAL, 
+              by=list(d4$BNKRUPLAST5), mean), by="Group.1")
+colnames(bank) = c("Status","Student_loan","Car_loan","Mortgage","Credit_card")
+bank <- gather(bank, key=Loan_type, value=Amount, 
+               Student_loan, Car_loan, Mortgage, Credit_card)
+bank$Amount <- bank$Amount/1000
+bank$Status<-c("Non-Bankruptcy","Bankruptcy","Non-Bankruptcy","Bankruptcy",
+               "Non-Bankruptcy","Bankruptcy","Non-Bankruptcy","Bankruptcy")
+
+g1 <- ggplot(bank, aes(Status, Amount, fill=Loan_type)) + 
+  geom_bar(position="stack", stat="identity") + 
+  xlab("") + ylab("Average Loan (k$)") + scale_fill_discrete(name="", 
+  labels=c("Car loan","Credit card","Mortgage","Student loan")) +
+  coord_cartesian(ylim=c(0, 150)) + 
+  ggtitle("Loan comparison by bankruptcy status") + theme_economist()
+g1
+```
+
+```{r}
+fore <- aggregate(d4$EDN_INST, by=list(d4$FORECLLAST5), mean)
+fore <- merge(fore, aggregate(d4$VEH_INST, 
+              by=list(d4$FORECLLAST5), mean), by="Group.1")
+fore <- merge(fore, aggregate(d4$NH_MORT, 
+              by=list(d4$FORECLLAST5), mean), by="Group.1")
+fore <- merge(fore, aggregate(d4$CCBAL, 
+              by=list(d4$FORECLLAST5), mean), by="Group.1")
+colnames(fore) = c("Status", "Student_loan", "Car_loan", "Mortgage", "Credit_card")
+fore <- gather(fore, key=Loan_type, value=Amount, 
+               Student_loan, Car_loan, Mortgage, Credit_card)
+fore$Amount <- fore$Amount/1000
+fore$Status<-c("Non-Foreclosure","Foreclosure","Non-Foreclosure","Foreclosure",
+               "Non-Foreclosure","Foreclosure","Non-Foreclosure","Foreclosure")
+
+g2 <- ggplot(fore, aes(Status, Amount, fill=Loan_type)) + 
+  geom_bar(position="stack", stat="identity") + 
+  xlab("") + ylab("Average Loan (k$)") + scale_fill_discrete(name="", 
+  labels=c("Car loan","Credit card","Mortgage","Student loan")) + 
+  coord_cartesian(ylim=c(0, 150)) + 
+  ggtitle("Loan comparison by foreclosure status") + theme_economist()
+g2
+```
+
+```{r}
+food <- aggregate(d4$FOODHOME, by=list(d4$BNKRUPLAST5), mean)
+food <- merge(food, aggregate(d4$FOODDELV, 
+              by=list(d4$BNKRUPLAST5), mean), by="Group.1")
+food <- merge(food, aggregate(d4$FOODAWAY, 
+              by=list(d4$BNKRUPLAST5), mean), by="Group.1")
+colnames(food) = c("BNK", "HOME", "DELV", "AWAY")
+food <- gather(food, key=food_type, value=amount, HOME, DELV, AWAY)
+food$BNK<-c("Non-Bankruptcy","Bankruptcy","Non-Bankruptcy","Bankruptcy",
+            "Non-Bankruptcy","Bankruptcy")
+
+ggplot(food, aes(BNK, amount, fill=food_type)) + 
+  geom_bar(position="dodge", stat="identity") + 
+  xlab("")+ylab("Average Spending per year ($)")+scale_fill_discrete(name="",
+  labels=c("food away from home","food delivered to home","food at home")) +
+  ggtitle("Food behavior comparison by bankruptcy status") + theme_economist()
+```
+
+#### **Comment:** The both graphs show that people who faced bankruptcy or foreclosure tend to have larger student loan with smaller other loans than those who did not. This suggests that relatively large student loan could be one of the reasons of bankruptcy or foreclosure, which the editor would be interested in. Also, according to the third graph, people who faced bankruptcy would be less likely to eat outside of home.
+
+## 5. Make two plots interactive
+
+```{r}
+ggplotly(g1)
+```
+
+```{r}
+ggplotly(g2)
+```
+
+#### **Comment:** This interactivity would be beneficial because we could not see the exact amount of each loan type from the accumulated bar charts.
+
+## 6. Data Table
+
+```{r}
+d6 <- subset(raw[,c(-1,-4,-6,-8:-10,-12,-13:-16,-18:-21,-23:-27,
+             -29:-45,-47:-50:-55)], YEAR==2016)
+datatable(d6, rownames = FALSE, filter = list(position = "top"), 
+          options = list(language = list(sSearch = "Filter:")),
+          colnames = c("Year","Age","Sex","Education","Married",
+                       "Asset","Debt","Student Loan","Income"))
+```
+
+#### **Comment:** This is a shortend database for student loan and other related characters. We can examine each household by this data table by ourselves and may find some implications to filter some variables.
